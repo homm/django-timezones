@@ -12,7 +12,7 @@ from timezones.utils import coerce_timezone_value, validate_timezone_max_length
 
 MAX_TIMEZONE_LENGTH = getattr(settings, "MAX_TIMEZONE_LENGTH", 100)
 default_tz = pytz.timezone(getattr(settings, "TIME_ZONE", "UTC"))
-
+db_tz = pytz.utc
 
 class TimeZoneField(models.CharField):
     
@@ -91,9 +91,9 @@ class LocalizedDateTimeField(models.DateTimeField):
         ## convert to settings.TIME_ZONE
         if value is not None:
             if value.tzinfo is None:
-                value = default_tz.localize(value)
+                value = default_tz.localize(value).astimezone(db_tz)
             else:
-                value = value.astimezone(default_tz)
+                value = value.astimezone(db_tz)
         return super(LocalizedDateTimeField, self).get_db_prep_save(value)
     
     def get_db_prep_lookup(self, lookup_type, value):
@@ -102,15 +102,14 @@ class LocalizedDateTimeField(models.DateTimeField):
         """
         ## convert to settings.TIME_ZONE
         if value.tzinfo is None:
-            value = default_tz.localize(value)
+            value = default_tz.localize(value).astimezone(db_tz)
         else:
-            value = value.astimezone(default_tz)
+            value = value.astimezone(db_tz)
         return super(LocalizedDateTimeField, self).get_db_prep_lookup(lookup_type, value)
-
 
 def prep_localized_datetime(sender, **kwargs):
     for field in sender._meta.fields:
-        if not isinstance(field, LocalizedDateTimeField) or field.timezone is None:
+        if not isinstance(field, LocalizedDateTimeField):# or field.timezone is None:
             field = None
             continue
 
@@ -127,40 +126,43 @@ def prep_localized_datetime(sender, **kwargs):
                     setattr(instance, dt_field_name, None)
                     return
                 if dt.tzinfo is None:
-                    dt = default_tz.localize(dt)
+                    dt = db_tz.localize(dt)
                 time_zone = field.timezone
-                if isinstance(field.timezone, basestring):
-                    tz_name = instance._default_manager.filter(
-                        pk=model_instance._get_pk_val()
-                        ).values_list(field.timezone)[0][0]
-                    try:
-                        time_zone = pytz.timezone(tz_name)
-                    except:
-                        time_zone = default_tz
-                    if time_zone is None:
-                        # lookup failed
-                        time_zone = default_tz
-                        #raise pytz.UnknownTimeZoneError(
-                        #    "Time zone %r from relation %r was not found"
-                        #    % (tz_name, field.timezone)
-                        #)
-                elif callable(time_zone):
-                    tz_name = time_zone()
-                    if isinstance(tz_name, basestring):
+                if time_zone:
+                    if isinstance(time_zone, basestring):
+                        tz_name = instance._default_manager.filter(
+                            pk=model_instance._get_pk_val()
+                            ).values_list(field.timezone)[0][0]
                         try:
                             time_zone = pytz.timezone(tz_name)
                         except:
                             time_zone = default_tz
-                    else:
-                        time_zone = tz_name
-                    if time_zone is None:
-                        # lookup failed
-                        time_zone = default_tz
-                        #raise pytz.UnknownTimeZoneError(
-                        #    "Time zone %r from callable %r was not found"
-                        #    % (tz_name, field.timezone)
-                        #)
-                setattr(instance, dt_field_name, dt.astimezone(time_zone))
+                        if time_zone is None:
+                            # lookup failed
+                            time_zone = default_tz
+                            #raise pytz.UnknownTimeZoneError(
+                            #    "Time zone %r from relation %r was not found"
+                            #    % (tz_name, field.timezone)
+                            #)
+                    elif callable(time_zone):
+                        tz_name = time_zone()
+                        if isinstance(tz_name, basestring):
+                            try:
+                                time_zone = pytz.timezone(tz_name)
+                            except:
+                                time_zone = default_tz
+                        else:
+                            time_zone = tz_name
+                        if time_zone is None:
+                            # lookup failed
+                            time_zone = default_tz
+                            #raise pytz.UnknownTimeZoneError(
+                            #    "Time zone %r from callable %r was not found"
+                            #    % (tz_name, field.timezone)
+                            #)
+                    setattr(instance, dt_field_name, dt.astimezone(time_zone))
+                else:
+                    setattr(instance, dt_field_name, dt)
             return (get_dtz_field, set_dtz_field)
         setattr(sender, field.attname, property(*gen_getset_dtz_field(field)))
 

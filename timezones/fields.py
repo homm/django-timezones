@@ -94,18 +94,20 @@ class LocalizedDateTimeField(models.DateTimeField):
                 value = default_tz.localize(value).astimezone(db_tz)
             else:
                 value = value.astimezone(db_tz)
-        return super(LocalizedDateTimeField, self).get_db_prep_save(value)
+        return super(LocalizedDateTimeField, self).get_db_prep_save(value, connection)
     
-    def get_db_prep_lookup(self, lookup_type, value):
+    def get_db_prep_lookup(self, lookup_type, value, connection, prepared=False):
         """
         Returns field's value prepared for database lookup.
         """
+        ## TODO:: Total wrong. Values can be array of dates or regexp, date or mounth (number)
+        ## Should be moved to get_db_prep_value 
         ## convert to db_tz
         if value.tzinfo is None:
             value = default_tz.localize(value).astimezone(db_tz)
         else:
             value = value.astimezone(db_tz)
-        return super(LocalizedDateTimeField, self).get_db_prep_lookup(lookup_type, value)
+        return super(LocalizedDateTimeField, self).get_db_prep_lookup(lookup_type, value, connection, prepared)
 
 def prep_localized_datetime(sender, **kwargs):
     for field in sender._meta.fields:

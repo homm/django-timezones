@@ -29,9 +29,9 @@ class TimeZoneField(models.CharField):
         defaults.update(kwargs)
         return super(TimeZoneField, self).__init__(*args, **defaults)
     
-    def validate(self, value, model_instance):
+    def validate(self, value, instance):
         # coerce value back to a string to validate correctly
-        return super(TimeZoneField, self).validate(smart_str(value), model_instance)
+        return super(TimeZoneField, self).validate(smart_str(value), instance)
     
     def run_validators(self, value):
         # coerce value back to a string to validate correctly
@@ -48,7 +48,7 @@ class TimeZoneField(models.CharField):
             return smart_unicode(value)
         return value
     
-    def get_db_prep_save(self, value, connection=None):
+    def get_db_prep_save(self, value, connection):
         """
         Prepares the given value for insertion into the database.
         """
@@ -84,11 +84,11 @@ class LocalizedDateTimeField(models.DateTimeField):
         defaults.update(kwargs)
         return super(LocalizedDateTimeField, self).formfield(**defaults)
     
-    def get_db_prep_save(self, value):
+    def get_db_prep_save(self, value, connection):
         """
         Returns field's value prepared for saving into a database.
         """
-        ## convert to settings.TIME_ZONE
+        ## convert to db_tz
         if value is not None:
             if value.tzinfo is None:
                 value = default_tz.localize(value).astimezone(db_tz)
@@ -100,7 +100,7 @@ class LocalizedDateTimeField(models.DateTimeField):
         """
         Returns field's value prepared for database lookup.
         """
-        ## convert to settings.TIME_ZONE
+        ## convert to db_tz
         if value.tzinfo is None:
             value = default_tz.localize(value).astimezone(db_tz)
         else:
@@ -110,13 +110,12 @@ class LocalizedDateTimeField(models.DateTimeField):
 def prep_localized_datetime(sender, **kwargs):
     for field in sender._meta.fields:
         if not isinstance(field, LocalizedDateTimeField):# or field.timezone is None:
-            field = None
             continue
 
         # Beware python scoping and for loops (for loops don't introduce new scope)
         # http://stackoverflow.com/questions/233673/lexical-closures-in-python
         def gen_getset_dtz_field(field):
-            dt_field_name = "_datetimezone_%s" % field.attname
+            dt_field_name = "_timezone_%s" % field.attname
 
             def get_dtz_field(instance):
                 return getattr(instance, dt_field_name)
@@ -131,7 +130,7 @@ def prep_localized_datetime(sender, **kwargs):
                 if time_zone:
                     if isinstance(time_zone, basestring):
                         tz_name = instance._default_manager.filter(
-                            pk=model_instance._get_pk_val()
+                                pk=instance._get_pk_val()
                             ).values_list(field.timezone)[0][0]
                         try:
                             time_zone = pytz.timezone(tz_name)
@@ -174,12 +173,17 @@ signals.class_prepared.connect(prep_localized_datetime)
 # allow South to handle TimeZoneField smoothly
 try:
     from south.modelsinspector import add_introspection_rules
-    add_introspection_rules(rules=[(
-                                (TimeZoneField, ), 
-                                [], 
-                                {
-                                    "max_length": ["max_length", { "default": MAX_TIMEZONE_LENGTH }],
-                                })],
-                            patterns=['timezones\.fields\.'])
+    add_introspection_rules(
+        rules=[
+            (
+                (TimeZoneField, ), 
+                [], 
+                {
+                    "max_length": ["max_length", { "default": MAX_TIMEZONE_LENGTH }],
+                }
+            )
+        ],
+        patterns=['timezones\.fields\.']
+    )
 except ImportError:
     pass

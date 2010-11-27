@@ -1,17 +1,20 @@
+# -*- coding: utf-8 -*-
+
 from django.conf import settings
 from django.db import models
 from django.db.models import signals
 from django.utils.encoding import smart_unicode, smart_str
 
 import pytz
+from datetime import datetime
 
 from timezones import forms, zones
 from timezones.utils import coerce_timezone_value, validate_timezone_max_length
 
-
-
 MAX_TIMEZONE_LENGTH = getattr(settings, "MAX_TIMEZONE_LENGTH", 100)
+" All LocalizedDateTimeField have own time zone. If this time zone is not set, default_tz is used. "
 default_tz = pytz.timezone(getattr(settings, "TIME_ZONE", "UTC"))
+" All data in database stored in UTC. "
 db_tz = pytz.utc
 
 class TimeZoneField(models.CharField):
@@ -84,30 +87,175 @@ class LocalizedDateTimeField(models.DateTimeField):
         defaults.update(kwargs)
         return super(LocalizedDateTimeField, self).formfield(**defaults)
     
-    def get_db_prep_save(self, value, connection):
-        """
-        Returns field's value prepared for saving into a database.
-        """
-        ## convert to db_tz
-        if value is not None:
+    def get_prep_value(self, value):
+        value = self.to_python(value)
+        if not value is None:
             if value.tzinfo is None:
                 value = default_tz.localize(value).astimezone(db_tz)
             else:
                 value = value.astimezone(db_tz)
-        return super(LocalizedDateTimeField, self).get_db_prep_save(value, connection)
+        return value
     
-    def get_db_prep_lookup(self, lookup_type, value, connection, prepared=False):
+    def get_db_prep_value(self, value, connection, prepared=False):
+        if not prepared:
+            value = self.get_prep_value(value)
+        if isinstance(value, datetime) and connection.settings_dict['ENGINE'] in ('django.db.backends.mysql',):
+            value = value.replace(tzinfo=None)
+        return connection.ops.value_to_db_datetime(value)
+
+class TestDateTimeDescriptor(object):
+    """
+    Хитрость в том, что данные в базе хранятся в utc и минуя метод __set__ данного класса 
+    падают точно в attname, который, ксати, обычно называется fieldname_utc.
+    """
+    def __init__(self, field):
+        self.field = field
+    
+    def get_timezone(self, instance):
+        return pytz.timezone('Asia/Yekaterinburg')
+    
+    def __set__(self, instance, value):
         """
-        Returns field's value prepared for database lookup.
+        Метод __set__ вызывается только когда полю назаначаются данные из вне. А все данные из вне приходят 
+        в часовом поясе данного конкретного поля. Но методу __set__ не нужно знать такие тонкости, ему 
+        нужно только сохранить пришедшие данные в отличном от attname месте. Просто name подойдет.
         """
-        ## TODO:: Total wrong. Values can be array of dates or regexp, date or mounth (number)
-        ## Should be moved to get_db_prep_value 
-        ## convert to db_tz
-        if value.tzinfo is None:
-            value = default_tz.localize(value).astimezone(db_tz)
+        instance.__dict__[self.field.name] = value
+        cache_name = self.field.get_cache_name()
+        if cache_name in instance.__dict__:
+            del instance.__dict__[cache_name]
+        del instance.__dict__[self.field.attname]
+        
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        
+        cache_name = self.field.get_cache_name()
+        if cache_name in instance.__dict__:
+            print '__get__: cache, ', instance.__dict__[cache_name]
+            return instance.__dict__[cache_name]
+        
+        if self.field.attname in instance.__dict__:
+            " В attname (fieldname_utc) всегда datetime в utc "
+            value = instance.__dict__[self.field.attname]
+            if not value is None:
+                if value.tzinfo is None:
+                   value = db_tz.localize(value)
+                timezone = self.get_timezone(instance)
+                value = value.astimezone(timezone)
+            instance.__dict__[cache_name] = value
+            print '__get__: attname, ', value
+            return value
         else:
+            value = instance.__dict__[self.field.name]
+            if isinstance(value, datetime):
+                " В просто name попадают данные в текущем часовом поясе поля. "
+                timezone = self.get_timezone(instance)
+                if value.tzinfo is None:
+                    value = timezone.localize(value)
+                else:
+                    value = value.astimezone(timezone)
+                print '__get__: name, ', value
+                instance.__dict__[cache_name] = value
+            return value
+    
+    def get_for_save(self, instance):
+        " Возвращает значение для базы, в utc "
+        if self.field.attname in instance.__dict__:
+            " В attname (fieldname_utc) всегда datetime в utc "
+            value = instance.__dict__[self.field.attname]
+            if not value is None and value.tzinfo is None:
+               value = db_tz.localize(value)
+            print 'get_for_save: attname, ', value
+            return value
+        else:
+            value = self.field.to_python(instance.__dict__[self.field.name])
+            " В просто name попадают данные в текущем часовом поясе поля. "
+            if not value is None:
+                if value.tzinfo is None:
+                    timezone = self.get_timezone(instance)
+                    value = timezone.localize(value)
+                value = value.astimezone(db_tz)
+            print 'get_for_save: name, ', value
+            return value
+
+class TestDateTimeField(models.DateTimeField):
+    def __init__(self, verbose_name=None, name=None, timezone=None, cache=None, **kwargs):
+        """
+        timezone - Может быть объектом tytz.timezone, или callable, возвращающим tytz.timezone, или строкой. 
+            Если timezone строка — то это либо название часового пояса, которое должно присутствовать 
+            в pytz.all_timezones_set, либо лукап в базу данных.
+        cache — в случае, если timezone задан в виде лукапа в базу данных, он может генерироваться много запросов.
+            Для сохранения часового пояса можно использовать кеш. Это тпараметр задает время кеширования.
+            False — Не использовать кеш
+            True, None — Время кеширования по-умлочанию
+            Число — Время кеширования в секундах.
+        """
+        if isinstance(timezone, basestring):
+            timezone = smart_str(timezone)
+        if timezone in pytz.all_timezones_set:
+            self.timezone = pytz.timezone(timezone)
+        else:
+            self.timezone = timezone
+        self.cache = cache
+        super(TestDateTimeField, self).__init__(verbose_name, name, **kwargs)
+        
+    def get_prep_value(self, value):
+        """
+        Все данные хранятся в utc. Соответствено, прежде чем обращатся к серверу, нужно сконверитровать все в utc.
+        Данные с неизвестной зоной нужно считать зоной приложения, т.к. они скорее всего получены от 
+        datetime.now() или производных. Для прочих случаев лучше прописывать зону явно.
+        """
+        value = self.to_python(value)
+        if not value is None:
+            if value.tzinfo is None:
+                value = default_tz.localize(value)
             value = value.astimezone(db_tz)
-        return super(LocalizedDateTimeField, self).get_db_prep_lookup(lookup_type, value, connection, prepared)
+        return value
+    
+    def get_db_prep_value(self, value, connection, prepared=False):
+        """
+        Драйвер mysql (может быть не только он) отказывается принимать данные tzinfo, поэтому tzinfo нужно вырезать. 
+        """
+        if not prepared:
+            value = self.get_prep_value(value)
+        if not value is None and connection.settings_dict['ENGINE'] in ('django.db.backends.mysql',):
+            value = value.replace(tzinfo=None)
+        return connection.ops.value_to_db_datetime(value)
+    
+    def pre_save(self, model_instance, add):
+        if self.auto_now or (self.auto_now_add and add):
+            " Во-первых, текущее время нужно взять в utc "
+            value = datetime.now(db_tz)
+            setattr(model_instance, self.name, value)
+            return value
+        """
+        Во-вторых, нужно уже здесь подготовить значение, потому что дальше не 
+        будет доступа к модели, а значит и к часовому поясу.
+        """
+        descriptor = getattr(type(model_instance), self.name)
+        return descriptor.get_for_save(model_instance)
+    
+    def get_db_prep_save(self, value, connection):
+        " Значение было подготовленно выше, в pre_save "
+        return self.get_db_prep_value(value, connection=connection, prepared=True)
+    
+    def get_attname(self):
+        " Для хранения значения из базы в модели выбираем другое имя. "
+        return u'%s_utc' % self.name
+    
+    def get_default(self):
+        """
+        Когда вызывается get_defaults, объекта нет, поэтому считаем часовой пояс приложения.
+        Default уже не может быть ничем кроме datetime или None.
+        """
+        value = super(TestDateTimeField, self).get_default()
+        print 'get_default: ', value
+        return self.get_prep_value(value)
+    
+    def contribute_to_class(self, cls, name):
+        super(TestDateTimeField, self).contribute_to_class(cls, name)
+        setattr(cls, name, TestDateTimeDescriptor(self))
 
 def prep_localized_datetime(sender, **kwargs):
     for field in sender._meta.fields:

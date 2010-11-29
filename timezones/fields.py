@@ -65,7 +65,7 @@ class TimeZoneField(models.CharField):
         return {self.attname: smart_unicode(value)}
 
 
-class TestDateTimeDescriptor(object):
+class LocalizedDateTimeDescriptor(object):
     """
     Хитрость в том, что данные в базе хранятся в utc и минуя метод __set__ данного класса 
     падают точно в attname, который, ксати, обычно называется fieldname_utc.
@@ -181,7 +181,7 @@ def get_timezone(instance, timezone, cache_name):
     instance.__dict__[cache_name] = timezone
     return timezone 
 
-class TestDateTimeField(models.DateTimeField):
+class LocalizedDateTimeField(models.DateTimeField):
     def __init__(self, verbose_name=None, name=None, timezone=None, **kwargs):
         """
         timezone - Может быть объектом tytz.timezone, или callable, возвращающим tytz.timezone, или строкой. 
@@ -194,7 +194,7 @@ class TestDateTimeField(models.DateTimeField):
             self.timezone = pytz.timezone(timezone)
         else:
             self.timezone = timezone
-        super(TestDateTimeField, self).__init__(verbose_name, name, **kwargs)
+        super(LocalizedDateTimeField, self).__init__(verbose_name, name, **kwargs)
         
     def get_prep_value(self, value):
         """
@@ -241,7 +241,7 @@ class TestDateTimeField(models.DateTimeField):
         Когда вызывается get_defaults, объекта нет, поэтому считаем часовой пояс приложения.
         Default уже не может быть ничем кроме datetime или None.
         """
-        value = super(TestDateTimeField, self).get_default()
+        value = super(LocalizedDateTimeField, self).get_default()
         return self.get_prep_value(value)
     
     def get_attname(self):
@@ -252,7 +252,7 @@ class TestDateTimeField(models.DateTimeField):
         return '%s_timezone' % self.name
     
     def contribute_to_class(self, cls, name):
-        super(TestDateTimeField, self).contribute_to_class(cls, name)
+        super(LocalizedDateTimeField, self).contribute_to_class(cls, name)
         setattr(cls, name, TestDateTimeDescriptor(self))
         timezone = self.timezone
         if timezone is None:
@@ -279,7 +279,7 @@ class TestDateTimeField(models.DateTimeField):
         """
         defaults = {'initial': None, 'show_hidden_initial': False}
         defaults.update(kwargs)
-        return super(TestDateTimeField, self).formfield(**defaults)
+        return super(LocalizedDateTimeField, self).formfield(**defaults)
 
 # allow South to handle TimeZoneField smoothly
 try:

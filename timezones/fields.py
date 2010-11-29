@@ -171,9 +171,8 @@ def get_timezone(instance, timezone, cache_name):
                 ).values_list('__'.join(timezone_parts))[0][0]
             else:
                 timezone = getattr(instance, timezone_parts[0])
-            if timezone is None:
+            if not timezone:
                 timezone = default_tz
-            print 'get_timezone: ', timezone_parts
     
     if isinstance(timezone, basestring):
         timezone = pytz.timezone(timezone)
@@ -253,7 +252,7 @@ class LocalizedDateTimeField(models.DateTimeField):
     
     def contribute_to_class(self, cls, name):
         super(LocalizedDateTimeField, self).contribute_to_class(cls, name)
-        setattr(cls, name, TestDateTimeDescriptor(self))
+        setattr(cls, name, LocalizedDateTimeDescriptor(self))
         timezone = self.timezone
         if timezone is None:
             setattr(cls, self.get_timezone_name(), default_tz)

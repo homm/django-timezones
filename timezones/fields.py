@@ -174,7 +174,9 @@ def get_timezone(instance, timezone, cache_name):
             if not timezone:
                 timezone = default_tz
     
-    if isinstance(timezone, basestring):
+    if timezone is None:
+        timezone = default_tz
+    elif isinstance(timezone, basestring):
         timezone = pytz.timezone(timezone)
     
     instance.__dict__[cache_name] = timezone
